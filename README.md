@@ -156,3 +156,135 @@ T fragment<Use, m, n, k, T, Layout>::x[num_elements];
     wmma::store_matrix_sync(c + cRow + cCol * ldc, c_frag, ldc, wmma::mem_col_major);
     // 官方 blog 指出保存的地址可以为GPU上任意可见地址（及 shared memory 和 global memory ）。
 ```
+
+### Instant-NGP 代码实例
+这段代码是 Instant-NGP 使用 WMMA 调用 Tensor Core 进行计算的源码。在 CUDA 上执行神经网络前向传播过程中的一部分，具体来说是实现了一个输入层的前向传播。*具体见注释。*
+```c++
+template <int WIDTH, int N_ITERS, typename OUT_T, typename INPUT_LAYOUT>
+// 使用了 template 模板参数来定义了当前线程块的宽度（WIDTH），迭代次数（N_ITERS），以及输出和输入数据类型（OUT_T 和 INPUT_LAYOUT）。
+__device__ void threadblock_input_layer_forward_dynamic(Activation activation, __half* __restrict__ act_shmem, const __half* __restrict__ input_threadblock, const __half* __restrict__ weights_this_layer, OUT_T* __restrict__ out_intermediate_threadblock_this_layer, const uint32_t in_width, const uint32_t batch_size) {
+// 激活函数的类型（activation），输入数据，权重矩阵，输出数据，输入宽度和批次大小。
+
+	// act_shmem contains the intermediate activations (shared memory) of the thread block's chunk of the batch
+	// input_threadblock points to the thread block's chunk of the input batch in global memory
+	// weights_this_layer points to the weight matrix of the current layer
+	// out_intermediate_threadblock_this_layer points to the location where intermediate activations produced by the thread block should be written to.
+	//                  Can be nullptr if nothing should be written.
+	// in_width is the dynamic width of the input layer
+
+	constexpr uint32_t SKEW = WIDTH % 16 == 0 ? 8 : 0;
+	constexpr uint32_t INPUT_SKEW = 8;
+	constexpr uint32_t N_BLOCKS = WIDTH / 16;
+
+	using namespace nvcuda;
+
+	// Fragments
+	// 它使用 nvcuda 命名空间定义了 wmma 类型的矩阵片段（fragment），包括矩阵 a（act_frag），矩阵 b（weights_frag）和累加器（result_frag）。
+	// 这些片段将在之后的代码中被用于进行矩阵乘法。
+	wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, INPUT_LAYOUT> act_frag;
+	wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> weights_frag;
+	wmma::fragment<wmma::accumulator, 16, 16, 16, OUT_T> result_frag[N_ITERS];
+
+	// Indices
+	// 线程在当前卷积核中的索引
+	const uint32_t li = threadIdx.x; // index in warp ("lane index")
+	const uint32_t wi = threadIdx.y; // index in block ("warp index")
+
+	// 计算矩阵乘法中的索引
+	const uint32_t lane_offset = (8 * li) % WIDTH;
+	const uint32_t row = (8 * li + wi * 8 * 32) / WIDTH;
+
+	// 表示权重矩阵中的一列
+	const uint32_t weights_col = 16 * wi;
+
+	// 一个指向共享内存的指针 weights_shmem，这将在之后的代码中用于加载权重矩阵
+	__half* __restrict__ weights_shmem = act_shmem + 16 * (in_width + INPUT_SKEW);
+
+	// Load input weight matrix (fits completely into shared memory)
+	// Each thread can load 8 fp16 elements (16 bytes) at once; we have N_BLOCKS warps
+	const uint32_t n_elems_per_load = N_BLOCKS * 32 * 8;
+	const uint32_t thread_elem_idx = (li + wi * 32) * 8;
+
+	const uint32_t n_elems_b = WIDTH * in_width;
+	// 主要是定义了一些变量和指针来加载权重矩阵。
+
+
+	TCNN_PRAGMA_UNROLL // 用于控制循环的宏
+	for (uint32_t idx = thread_elem_idx; idx < n_elems_b; idx += n_elems_per_load) {
+		const uint32_t idx_skewed = idx + idx / in_width * INPUT_SKEW;
+		*(int4*)&weights_shmem[idx_skewed] = *(int4*)&weights_this_layer[idx];
+		// 使用一个类型为 int4 的指针来读取 weights_this_layer 数组中的元素，并将其赋值给 weights_shmem 数组中对应的元素。
+	}
+
+	const uint32_t n_tensor_ops = in_width / 16;
+
+	if (std::is_same<INPUT_LAYOUT, wmma::col_major>::value) {
+		__syncthreads(); // 同步线程之间的操作。
+	}
+
+	TCNN_PRAGMA_UNROLL
+	for (int l = 0; l < N_ITERS; ++l) {
+		if (std::is_same<INPUT_LAYOUT, wmma::row_major>::value) {
+			// Load chunk of inputs into shmem.
+			// This is faster than loading it from gmem directly, even though it is only used once.
+			// (Possibly due to latency hiding through staging.)
+			const uint32_t n_elems_a = 16 * in_width;
+
+			TCNN_PRAGMA_UNROLL
+			for (uint32_t idx = thread_elem_idx; idx < n_elems_a; idx += n_elems_per_load) {
+				const uint32_t idx_skewed = idx + idx / in_width * INPUT_SKEW;
+				*(int4*)&act_shmem[idx_skewed] = *(int4*)&input_threadblock[l * n_elems_a + idx];
+			}
+
+			__syncthreads();
+		}
+
+		wmma::fill_fragment(result_frag[l], 0.0f);
+		// 结果矩阵中的元素都赋值为 0.0f
+
+		TCNN_PRAGMA_UNROLL
+		for (uint32_t i = 0; i < n_tensor_ops; ++i) {
+			// Load chunk of inputs and weights from shared memory and multiply them
+			// 从共享内存中加载一块输入数据和权重数据
+
+			if (std::is_same<INPUT_LAYOUT, wmma::row_major>::value) {
+				wmma::load_matrix_sync(act_frag, act_shmem + 16 * i, in_width + INPUT_SKEW);
+			} else {
+				wmma::load_matrix_sync(act_frag, input_threadblock + 16 * i * batch_size + 16 * l, batch_size);
+			}
+			wmma::load_matrix_sync(weights_frag, weights_shmem + 16 * i + weights_col * (in_width + INPUT_SKEW), in_width + INPUT_SKEW);
+			
+			// 使用 wmma::mma_sync 函数来执行矩阵乘法运算，将结果累加到结果矩阵中。
+			wmma::mma_sync(result_frag[l], act_frag, weights_frag, result_frag[l]);
+		}
+
+		// 如果 INPUT_LAYOUT 的值为 wmma::row_major
+		if (std::is_same<INPUT_LAYOUT, wmma::row_major>::value) {
+			__syncthreads();	// 同步线程。
+		}
+
+		warp_activation<__half>(activation, result_frag[l], result_frag[l]);
+	}
+
+	if (std::is_same<INPUT_LAYOUT, wmma::col_major>::value) {
+		__syncthreads();
+	}
+
+	TCNN_PRAGMA_UNROLL
+	for (int l = 0; l < N_ITERS; ++l) {
+		wmma::store_matrix_sync(act_shmem + weights_col + (16 * l) * (WIDTH + SKEW), result_frag[l], WIDTH + SKEW, wmma::mem_row_major);
+		// 在 Shared Memory 中存储一个矩阵，并且同步所有线程。
+		// act_shmem 是 Shared Memory 的指针，weights_col 是列偏移量， result_frag[l] 是矩阵， WIDTH 和 SKEW 是常量。
+	}
+
+	if (out_intermediate_threadblock_this_layer != nullptr) {
+		__syncthreads();
+
+		TCNN_PRAGMA_UNROLL
+		for (int i = 0; i < N_ITERS; ++i) {
+			*(int4*)&out_intermediate_threadblock_this_layer[lane_offset + (row + 16 * i) * WIDTH] = *(int4*)&act_shmem[lane_offset + (row + 16 * i) * (WIDTH + SKEW)];
+			// 会将 Shared Memory 中的数据复制到 out_intermediate_threadblock_this_layer 中，其中 lane_offset 是偏移量，row 是行偏移量
+		}
+	}
+}
+```
