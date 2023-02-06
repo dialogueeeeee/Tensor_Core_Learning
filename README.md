@@ -42,12 +42,57 @@ SM（流处理器）中的 8 个 Tensor 核心每个时钟周期总共执行 102
 
 ![Volta GV100 Tensor Core 运算](./fig2.png)
 
+## Tensor Core 性能比较
+本文采用 Baidu, NVIDIA, Intel, ARM, AMD 联合开发的 **DeepBench** 进行测试。以 **TFLOPS** （每秒浮点运算次数） 大小作为评价指标。
+
+### DeepBench 训练测试之 GEMM
+首先进行 GEMM 测试，利用某些深度学习应用程序（DeepSpeech、Speaker ID 和 Language Modeling）中的内核进行 GEMM 操作，测出的性能比在 cuBLAS 中运行纯矩阵-矩阵乘法更有代表性。
+
+测试的结果在意料之内，启用 Tensor Core 可以大幅提升性能。深入研究细节可以发现，Tensor Core 对于特定类型的矩阵-矩阵乘法会有特别的影响。
+
+![GEMM Average Performance](./fig4.png)
+
+通过深度学习应用程序拆分 GEMM 测试，我们可以了解 Tensor Core 在理想和非理想情况下的表现。
+
+Speaker ID GEMM 工作负载实际上只包含两个内核，其中 10 微秒的时间差意味着大约 1 TFLOPS 的算力差异。
+
+![Speaker ID](./fig5.png)
+![Language Modelling](./fig6.png)
+
+通过对语言模型内核的研究，可以了解 Tensor Core 在非理想情况下的性能。这些核矩阵的大小是 m=512 或 1024，n=8 或 16，k=500000，虽然每个数在技术上都可以被8整除——这是满足张量核加速度的基本要求之一。但这些矩阵的形状与 Tensor Core 支持的 16*16*16、32*8*16 和 8*32*16 等基本 WMMA 形状不太匹配。假如 Tensor Core 真正在独立的 8x8x8 级别上运行，那么运算 8*8*8 矩阵的性能也不会很好。
+
+![wmma](./fig7.png)
+
+因此，Tensor Core 无法高效的将这些非常不平衡的矩阵分解为 n=8 或 16。而且，Tensor Core 在 DeepSpeech 内核上的性能也出现异常。
+
+![deepspeech](./fig8.png)
+
+从所有子项的平均成绩来看，这个浮点运算性能令人印象深刻。当矩阵适合于 Tensor Core 时，性能可以超过 90TFLOPS；相反如果二者无法契合，并正确的换位没有发挥作用，性能会低至 <1TFLOPS 的水平。
+
+### DeepBench 训练测试之 RNN
+
+对于 DeepBench RNN 内核的测试，RNN类型之间没有明显的差异，但是在每种 RNN 类型中，如果将不同内核挨个进行对比判断，也可以看到与 GEMM 中相同的趋势。
+
+![rnn](./fig9.png)
+![lstm](./fig10.png)
+![gru](./fig11.png)
+
+比较有趣的是，Titan Xp 与 Titan V 在未使用 Tensor Core 加速时的表现有很接近，Titan Xp 的高频率为其性能起到了一定的帮助。
+
+### DeepBench 训练测试之 Convolutions
+
+在卷积训练工作负载测试中，Tensor Core 再次显着提高了性能。鉴于卷积层是图像识别和分类的基础，因而卷积运算是 Tensor Core 加速的最大潜在受益者之一。
+
+从所有测试项的平均成绩可以看出，Volta 在启用了 Tensor Core 的 FP16 混合精度运算能力后性能再次取得了领先。不过与 GEMM 不同，在 FP32 卷积上启用 Tensor Core 会导致明显的性能损失。
+
+![conv](./fig12.png)
+![resnet](./fig13.png)
 
 ## Tensor Core 调用
 
 ### 简介
 利用 Tensor Core 实现矩阵乘法的加速，一般有如下两种方式：
-- 可以利用现成库函数，最新版本的 cuDNN 7.0、CUDA9.0 中的 cuBLAs，TensorRT 3.0 都支持 Tensor Core 的调用。*（该方式相对简单。）*
+- 可以利用现成库函数，最新版本的 **cuDNN 7.0**，CUDA9.0 中的 **cuBLAs**，**TensorRT 3.0** 都支持 Tensor Core 的调用；其中 cuBLAS 主要加速了 GEMM 计算，cuDNN 里主要用来加速卷积和 RNN 。*（该方式相对简单。）*
 - 在 CUDA 编程里实现 Tensor Core 的调用。新的 CUDA 9.0 里增加了 WMMA ，可以调用其中的API实现输入矩阵的 Load ，两个矩阵做乘加，还有结构矩阵的 Store 。*（该方式相对复杂，但是更底层的实现，更符合我们的需求。）*
 
 ### 代码示例
