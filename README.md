@@ -339,9 +339,9 @@ __device__ void threadblock_input_layer_forward_dynamic(Activation activation, _
 
 ## Reference
 参考部分文献/网页等如下。
-> [The NVIDIA Titan V Deep Learning Deep Dive: It's All About The Tensor Cores.](https://www.anandtech.com/show/12673/titan-v-deep-learning-deep-dive)
-> [NVIDIA深度学习Tensor Core全面解析。](https://www.leiphone.com/category/ai/2J6ql9o0gseuIBYY.html)
-> [NVIDIA Tensor Core深度学习核心解析。](https://news.mydrivers.com/1/593/593001.htm#)
-> [理解Tensor Core](https://zhuanlan.zhihu.com/p/75753718)
-> [Tensor Core有多牛？](https://blog.csdn.net/javastart/article/details/117371228)
-> [英伟达官方解读：Volta Tensor Core GPU实现AI性能新里程碑](https://zhuanlan.zhihu.com/p/36694750)
+> [The NVIDIA Titan V Deep Learning Deep Dive: It's All About The Tensor Cores.](https://www.anandtech.com/show/12673/titan-v-deep-learning-deep-dive)  
+> [NVIDIA深度学习Tensor Core全面解析。](https://www.leiphone.com/category/ai/2J6ql9o0gseuIBYY.html)  
+> [NVIDIA Tensor Core深度学习核心解析。](https://news.mydrivers.com/1/593/593001.htm#)  
+> [理解Tensor Core](https://zhuanlan.zhihu.com/p/75753718)  
+> [Tensor Core有多牛？](https://blog.csdn.net/javastart/article/details/117371228)  
+> [英伟达官方解读：Volta Tensor Core GPU实现AI性能新里程碑](https://zhuanlan.zhihu.com/p/36694750)  
