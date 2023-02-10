@@ -121,7 +121,8 @@ __global__ void wmma_example(half *a, half *b, float *c,
     int ldb = K;        // 矩阵 B 的行数
     int ldc = M;        // C 的行数(即 A 的行数)
 
-    // 【注意！】A,B的 size不局限于16*16，因为 16*16 只是单次 wmma 可运算的矩阵大小，而通过多个 warp（ SM 中的基本执行代码单元，包含 32 个 thread ）和循环实现更大 size 的矩阵运算。
+    // 【注意！】A,B的 size不局限于16*16，因为 16*16 只是单次 wmma 可运算的矩阵大小；
+    // 而通过多个 warp（ SM 中的基本执行代码单元，包含 32 个 thread ）和循环实现更大 size 的矩阵运算。
     
     // Tile using a 2D grid
     int warpM = (blockIdx.x * blockDim.x + threadIdx.x) / warpSize;
