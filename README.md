@@ -116,9 +116,10 @@ __global__ void wmma_example(half *a, half *b, float *c,
 {
     // 定义wmma在各个方向上的维度（实际上就是单次计算的小矩阵（tile）的size）
     // Leading dimensions. Packed with no transpositions.
+    // A[M, K] B[K, N] C[M, N]
     int lda = M;        // 矩阵 A 的行数
-    int ldb = K;        // 矩阵 A 的行数
-    int ldc = M;        // A 的列数(即 B 的行数)
+    int ldb = K;        // 矩阵 B 的行数
+    int ldc = M;        // C 的行数(即 A 的行数)
 
     // 【注意！】A,B的 size不局限于16*16，因为 16*16 只是单次 wmma 可运算的矩阵大小，而通过多个 warp（ SM 中的基本执行代码单元，包含 32 个 thread ）和循环实现更大 size 的矩阵运算。
     
